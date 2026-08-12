@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>时间热力图 Tracker</title>
+    
+    <!-- 自动读取 GitHub 仓库根目录下的 favicon 文件 -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/png" href="favicon.png">
+
+    <script>
+        // ⚠️ 请在此处替换为你在 Cloudflare 部署的真实 Worker 接口地址
+        window.WORKER_API_URL = 'https://heatmap-api.he-lin-yu-814.workers.dev/api/data';
+    </script>
+
     <style>
         :root {
             --bg-color: #121212;
@@ -12,7 +22,6 @@
             --border-color: #333;
             --accent-color: #3b82f6;
             
-            /* 新增：网格在深/浅色背景下的通用显影变量 */
             --grid-empty-bg: rgba(255, 255, 255, 0.05);
             --grid-empty-border: rgba(255, 255, 255, 0.08);
             --grid-empty-hover: rgba(255, 255, 255, 0.2);
@@ -40,7 +49,6 @@
             height: 100%;
         }
 
-        /* 顶部控制面板 */
         .panel {
             background: var(--card-bg);
             padding: 16px 20px;
@@ -95,7 +103,6 @@
             color: #fff;
         }
 
-        /* 标签热力图列表 (纵向滚动) */
         .heatmap-list {
             display: flex;
             flex-direction: column;
@@ -184,7 +191,6 @@
             gap: 8px;
         }
 
-        /* 热力图网格容器 */
         .heatmap-container {
             width: 100%;
             display: flex;
@@ -218,7 +224,6 @@
             max-height: 140px;
         }
 
-        /* 主界面 - 每日格子 */
         .day-cell {
             width: 100%;
             height: 100%;
@@ -249,7 +254,6 @@
             z-index: 3;
         }
 
-        /* 折叠区 */
         .collapsed-section {
             margin-top: 10px;
             border-top: 1px dashed var(--border-color);
@@ -271,7 +275,6 @@
             color: #ccc;
         }
 
-        /* 右侧固定备注面板 */
         .sidebar {
             width: 320px;
             height: 100%;
@@ -336,7 +339,6 @@
             border-color: var(--accent-color);
         }
 
-        /* 全年弹窗 Modal */
         .modal-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -413,7 +415,6 @@
             gap: 3px;
         }
 
-        /* 年历视图 - 每日格子 */
         .month-day-cell {
             aspect-ratio: 1;
             border-radius: 2px;
@@ -434,7 +435,6 @@
             color: #fff;
         }
 
-        /* 年历视图 - 开头对齐用的补位空白格 */
         .empty-placeholder {
             aspect-ratio: 1;
             border-radius: 2px;
@@ -451,9 +451,7 @@
 </head>
 <body>
 
-    <!-- 主视图区域 -->
     <div class="main-content">
-        <!-- 顶部操作栏 -->
         <div class="panel">
             <div class="panel-section">
                 <select id="tagSelect"></select>
@@ -478,11 +476,9 @@
             </div>
         </div>
 
-        <!-- 热力图列表 -->
         <div class="heatmap-list" id="heatmapList"></div>
     </div>
 
-    <!-- 右侧备注详情 -->
     <div class="sidebar">
         <h3>详情</h3>
         <div class="selected-info" id="selectedInfo">点击热力图格子查看详情</div>
@@ -494,7 +490,6 @@
         </div>
     </div>
 
-    <!-- 全年热力图 Modal -->
     <div class="modal-overlay" id="yearModalOverlay">
         <div class="year-modal">
             <div class="year-modal-header">
@@ -511,7 +506,7 @@
     </div>
 
     <script>
-        // --- 数据结构 ---
+        // 本地初始缓存数据结构
         let state = JSON.parse(localStorage.getItem('heatmap_app_state_v3')) || {
             tags: [
                 { id: '1', name: '编程', color: '#3b82f6', collapsed: false },
@@ -519,6 +514,41 @@
             ],
             records: {}
         };
+
+        // --- 全局同步控制：写入本地 + 异步同步至 Worker KV ---
+        async function saveState() {
+            localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
+            
+            if (window.WORKER_API_URL && !window.WORKER_API_URL.includes('your-worker-name')) {
+                try {
+                    await fetch(window.WORKER_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(state)
+                    });
+                } catch (e) {
+                    console.error('同步至云端失败，已保留本地更改', e);
+                }
+            }
+        }
+
+        // --- 页面初始化时拉取云端数据 ---
+        async function loadStateFromCloud() {
+            if (!window.WORKER_API_URL || window.WORKER_API_URL.includes('your-worker-name')) return;
+            try {
+                const res = await fetch(window.WORKER_API_URL);
+                if (res.ok) {
+                    const cloudData = await res.json();
+                    if (cloudData && cloudData.tags) {
+                        state = cloudData;
+                        localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
+                        renderUI();
+                    }
+                }
+            } catch (e) {
+                console.warn('云端读取失败，采用本地缓存数据', e);
+            }
+        }
 
         let selectedCell = null;
         let timerInterval = null;
@@ -529,10 +559,6 @@
         let currentModalTagId = null;
         let currentModalYear = new Date().getFullYear();
 
-        function saveState() {
-            localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
-        }
-
         function formatDate(date) {
             const y = date.getFullYear();
             const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -540,7 +566,6 @@
             return `${y}-${m}-${d}`;
         }
 
-        // --- 生成 26 周格子序列（确保当月完整覆盖） ---
         function getRecentGridDates() {
             const dates = [];
             const today = new Date();
@@ -549,7 +574,6 @@
             const currentMonth = today.getMonth();
             const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
 
-            // 让网格末尾包含当月最后一天所在的周六
             const dayOfWeek = lastDayOfMonth.getDay();
             const daysToSaturday = 6 - dayOfWeek;
             
@@ -570,7 +594,7 @@
         }
 
         function getHeatColor(baseHex, hours) {
-            if (!hours || hours === 0) return null; // 返回 null 使用 CSS 默认显示的可见空格子样式
+            if (!hours || hours === 0) return null;
             const alpha = Math.min(hours / 8, 1);
             let c = baseHex.replace('#', '');
             if (c.length === 3) c = c.split('').map(x => x + x).join('');
@@ -582,7 +606,6 @@
             return `rgba(${r}, ${g}, ${b}, ${Math.max(alpha, 0.35)})`;
         }
 
-        // --- UI 渲染 ---
         function renderUI() {
             const tagSelect = document.getElementById('tagSelect');
             tagSelect.innerHTML = '';
@@ -649,7 +672,6 @@
             }
         }
 
-        // 创建标签卡片
         function createTagCard(tag, recentDates, monthLabels) {
             const card = document.createElement('div');
             card.className = 'heatmap-card';
@@ -728,7 +750,6 @@
             card.appendChild(header);
             card.appendChild(container);
 
-            // 快捷内联编辑标签名
             setTimeout(() => {
                 const editBtn = card.querySelector(`#editBtn_${tag.id}`);
                 const nameText = card.querySelector(`#tagName_${tag.id}`);
@@ -796,7 +817,6 @@
             alert('备注保存成功！');
         });
 
-        // --- 全年弹窗逻辑 ---
         function openYearModal(tagId, year) {
             currentModalTagId = tagId;
             currentModalYear = year;
@@ -833,7 +853,6 @@
                 const lastDay = new Date(year, m + 1, 0);
                 const startOffset = firstDay.getDay();
 
-                // 前置空白格子：使用专门的占位框样式
                 for (let i = 0; i < startOffset; i++) {
                     const emptyCell = document.createElement('div');
                     emptyCell.className = 'empty-placeholder';
@@ -973,7 +992,9 @@
             if (tag) selectCell(today, tag);
         }
 
+        // 初始化：渲染界面并异步同步云端最新记录
         renderUI();
+        loadStateFromCloud();
     </script>
 </body>
 </html>
