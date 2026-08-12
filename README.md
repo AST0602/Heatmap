@@ -1,1 +1,979 @@
-# Heatmap
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时间热力图 Tracker</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --card-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --border-color: #333;
+            --accent-color: #3b82f6;
+            
+            /* 新增：网格在深/浅色背景下的通用显影变量 */
+            --grid-empty-bg: rgba(255, 255, 255, 0.05);
+            --grid-empty-border: rgba(255, 255, 255, 0.08);
+            --grid-empty-hover: rgba(255, 255, 255, 0.2);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            gap: 20px;
+            height: 100vh;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            min-width: 0;
+            height: 100%;
+        }
+
+        /* 顶部控制面板 */
+        .panel {
+            background: var(--card-bg);
+            padding: 16px 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .panel-section {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input, select, button {
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            outline: none;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent-color);
+        }
+
+        button {
+            cursor: pointer;
+            background: var(--accent-color);
+            border: none;
+            transition: background 0.2s, opacity 0.2s;
+            color: white;
+            font-weight: 500;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button.btn-secondary {
+            background: #333;
+            color: #ccc;
+        }
+        button.btn-secondary:hover {
+            background: #444;
+            color: #fff;
+        }
+
+        /* 标签热力图列表 (纵向滚动) */
+        .heatmap-list {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+
+        .heatmap-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 18px 20px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        .tag-name-text {
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 2px 6px;
+            outline: none;
+        }
+
+        .tag-name-text[contenteditable="true"] {
+            background: #2a2a2a;
+            border-color: var(--accent-color);
+        }
+
+        .year-link {
+            font-size: 13px;
+            color: #888;
+            cursor: pointer;
+            text-decoration: underline;
+            margin-left: 6px;
+            transition: color 0.2s;
+        }
+
+        .year-link:hover {
+            color: var(--accent-color);
+        }
+
+        .icon-btn {
+            background: none;
+            border: none;
+            color: #aaa;
+            font-size: 15px;
+            padding: 4px 6px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s, color 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .icon-btn:hover {
+            background: #333;
+            color: #fff;
+        }
+
+        .icon-btn.danger:hover {
+            background: #ef4444;
+            color: #fff;
+        }
+
+        .card-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* 热力图网格容器 */
+        .heatmap-container {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .months-header {
+            display: flex;
+            font-size: 11px;
+            color: #888;
+            height: 16px;
+            position: relative;
+            width: 100%;
+        }
+
+        .month-label-pos {
+            position: absolute;
+            white-space: nowrap;
+            transform: translateX(-50%);
+        }
+
+        .heatmap-grid {
+            display: grid;
+            grid-template-rows: repeat(7, 1fr);
+            grid-auto-flow: column;
+            grid-auto-columns: 1fr;
+            gap: 3px;
+            width: 100%;
+            aspect-ratio: 26 / 7;
+            max-height: 140px;
+        }
+
+        /* 主界面 - 每日格子 */
+        .day-cell {
+            width: 100%;
+            height: 100%;
+            border-radius: 2px;
+            background-color: var(--grid-empty-bg);
+            border: 1px solid var(--grid-empty-border);
+            cursor: pointer;
+            transition: transform 0.1s, border-color 0.1s, background-color 0.1s;
+            box-sizing: border-box;
+        }
+
+        .day-cell:hover {
+            transform: scale(1.25);
+            border-color: #fff;
+            z-index: 2;
+        }
+
+        .day-cell.future-cell {
+            opacity: 0.25;
+            cursor: not-allowed;
+            background-color: transparent;
+            border: 1px dashed var(--grid-empty-border);
+        }
+
+        .day-cell.selected {
+            border: 1.5px solid #fff !important;
+            box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
+            z-index: 3;
+        }
+
+        /* 折叠区 */
+        .collapsed-section {
+            margin-top: 10px;
+            border-top: 1px dashed var(--border-color);
+            padding-top: 15px;
+        }
+
+        .collapsed-header {
+            font-size: 14px;
+            color: #888;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+            margin-bottom: 12px;
+        }
+
+        .collapsed-header:hover {
+            color: #ccc;
+        }
+
+        /* 右侧固定备注面板 */
+        .sidebar {
+            width: 320px;
+            height: 100%;
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            padding: 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            flex-shrink: 0;
+        }
+
+        .sidebar h3 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+        }
+
+        .selected-info {
+            font-size: 14px;
+            color: #bbb;
+            line-height: 1.5;
+            background: #262626;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+
+        .note-editor {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            min-height: 0;
+        }
+
+        .note-editor label {
+            font-size: 14px;
+            font-weight: 500;
+            color: #ccc;
+        }
+
+        .wysiwyg-editor {
+            flex: 1;
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+            outline: none;
+            overflow-y: auto;
+            word-break: break-word;
+        }
+
+        .wysiwyg-editor:focus {
+            border-color: var(--accent-color);
+        }
+
+        /* 全年弹窗 Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .year-modal {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            width: 85vw;
+            max-width: 1050px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            overflow-y: auto;
+        }
+
+        .year-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+        }
+
+        .year-picker {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .year-calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+        }
+
+        .month-card {
+            background: #262626;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .month-card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #aaa;
+        }
+
+        .month-days-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 3px;
+        }
+
+        /* 年历视图 - 每日格子 */
+        .month-day-cell {
+            aspect-ratio: 1;
+            border-radius: 2px;
+            background-color: var(--grid-empty-bg);
+            border: 1px solid var(--grid-empty-border);
+            cursor: pointer;
+            font-size: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: transparent;
+            box-sizing: border-box;
+            transition: all 0.1s;
+        }
+
+        .month-day-cell:hover {
+            border-color: #fff;
+            color: #fff;
+        }
+
+        /* 年历视图 - 开头对齐用的补位空白格 */
+        .empty-placeholder {
+            aspect-ratio: 1;
+            border-radius: 2px;
+            background-color: rgba(255, 255, 255, 0.015);
+            border: 1px dashed rgba(255, 255, 255, 0.03);
+            pointer-events: none;
+        }
+
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+    <!-- 主视图区域 -->
+    <div class="main-content">
+        <!-- 顶部操作栏 -->
+        <div class="panel">
+            <div class="panel-section">
+                <select id="tagSelect"></select>
+                <div class="timer-display" id="timerDisplay" style="font-size: 20px; font-family: monospace; font-weight: bold; width: 90px; text-align: center;">00:00:00</div>
+                <button id="toggleTimerBtn">开始计时</button>
+            </div>
+            
+            <div style="border-left: 1px solid var(--border-color); height: 28px;"></div>
+
+            <div class="panel-section">
+                <span>手动补充:</span>
+                <input type="number" id="manualHours" placeholder="小时" style="width: 60px;" min="0" step="0.5">
+                <button id="addManualBtn" class="btn-secondary">添加</button>
+            </div>
+
+            <div style="border-left: 1px solid var(--border-color); height: 28px;"></div>
+
+            <div class="panel-section">
+                <input type="text" id="newTagName" placeholder="新标签名称" style="width: 110px;">
+                <input type="color" id="newTagColor" value="#3b82f6" style="padding: 2px; width: 36px; height: 34px; cursor: pointer;">
+                <button id="addTagBtn">新建标签</button>
+            </div>
+        </div>
+
+        <!-- 热力图列表 -->
+        <div class="heatmap-list" id="heatmapList"></div>
+    </div>
+
+    <!-- 右侧备注详情 -->
+    <div class="sidebar">
+        <h3>详情</h3>
+        <div class="selected-info" id="selectedInfo">点击热力图格子查看详情</div>
+        
+        <div class="note-editor">
+            <label>备注</label>
+            <div id="noteEditor" class="wysiwyg-editor" contenteditable="true" placeholder="记录今天在此事项上的详情..."></div>
+            <button id="saveNoteBtn">保存备注</button>
+        </div>
+    </div>
+
+    <!-- 全年热力图 Modal -->
+    <div class="modal-overlay" id="yearModalOverlay">
+        <div class="year-modal">
+            <div class="year-modal-header">
+                <div class="year-picker">
+                    <button class="btn-secondary" id="prevYearBtn">‹</button>
+                    <span id="modalYearTitle">2026</span>
+                    <button class="btn-secondary" id="nextYearBtn">›</button>
+                    <span id="modalTagTitle" style="font-size: 16px; color: #aaa; margin-left: 10px;"></span>
+                </div>
+                <button class="btn-secondary" id="closeYearModalBtn">✕ 关闭</button>
+            </div>
+            <div class="year-calendar-grid" id="yearCalendarGrid"></div>
+        </div>
+    </div>
+
+    <script>
+        // --- 数据结构 ---
+        let state = JSON.parse(localStorage.getItem('heatmap_app_state_v3')) || {
+            tags: [
+                { id: '1', name: '编程', color: '#3b82f6', collapsed: false },
+                { id: '2', name: '阅读', color: '#10b981', collapsed: false }
+            ],
+            records: {}
+        };
+
+        let selectedCell = null;
+        let timerInterval = null;
+        let timerSeconds = 0;
+        let activeTagId = null;
+        let isCollapsedSectionOpen = false;
+
+        let currentModalTagId = null;
+        let currentModalYear = new Date().getFullYear();
+
+        function saveState() {
+            localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
+        }
+
+        function formatDate(date) {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
+        // --- 生成 26 周格子序列（确保当月完整覆盖） ---
+        function getRecentGridDates() {
+            const dates = [];
+            const today = new Date();
+            
+            const currentYear = today.getFullYear();
+            const currentMonth = today.getMonth();
+            const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
+
+            // 让网格末尾包含当月最后一天所在的周六
+            const dayOfWeek = lastDayOfMonth.getDay();
+            const daysToSaturday = 6 - dayOfWeek;
+            
+            const endDate = new Date(lastDayOfMonth);
+            endDate.setDate(lastDayOfMonth.getDate() + daysToSaturday);
+
+            const totalDays = 26 * 7;
+            for (let i = totalDays - 1; i >= 0; i--) {
+                const d = new Date(endDate);
+                d.setDate(endDate.getDate() - i);
+                dates.push({
+                    dateStr: formatDate(d),
+                    dateObj: d,
+                    isFuture: d > today
+                });
+            }
+            return dates;
+        }
+
+        function getHeatColor(baseHex, hours) {
+            if (!hours || hours === 0) return null; // 返回 null 使用 CSS 默认显示的可见空格子样式
+            const alpha = Math.min(hours / 8, 1);
+            let c = baseHex.replace('#', '');
+            if (c.length === 3) c = c.split('').map(x => x + x).join('');
+            const num = parseInt(c, 16);
+            const r = (num >> 16) & 255;
+            const g = (num >> 8) & 255;
+            const b = num & 255;
+
+            return `rgba(${r}, ${g}, ${b}, ${Math.max(alpha, 0.35)})`;
+        }
+
+        // --- UI 渲染 ---
+        function renderUI() {
+            const tagSelect = document.getElementById('tagSelect');
+            tagSelect.innerHTML = '';
+            const activeTags = state.tags.filter(t => !t.collapsed);
+            activeTags.forEach(tag => {
+                const opt = document.createElement('option');
+                opt.value = tag.id;
+                opt.textContent = tag.name;
+                tagSelect.appendChild(opt);
+            });
+
+            const heatmapList = document.getElementById('heatmapList');
+            heatmapList.innerHTML = '';
+
+            const recentDates = getRecentGridDates();
+
+            const monthLabels = [];
+            let lastMonth = -1;
+            const totalWeeks = Math.ceil(recentDates.length / 7);
+
+            recentDates.forEach((item, index) => {
+                if (index % 7 === 0) {
+                    const m = item.dateObj.getMonth();
+                    if (m !== lastMonth) {
+                        const weekIdx = Math.floor(index / 7);
+                        monthLabels.push({
+                            percent: ((weekIdx + 0.5) / totalWeeks) * 100,
+                            name: (m + 1) + '月'
+                        });
+                        lastMonth = m;
+                    }
+                }
+            });
+
+            const normalTags = state.tags.filter(t => !t.collapsed);
+            const collapsedTags = state.tags.filter(t => t.collapsed);
+
+            normalTags.forEach(tag => {
+                heatmapList.appendChild(createTagCard(tag, recentDates, monthLabels));
+            });
+
+            if (collapsedTags.length > 0) {
+                const collapsedSection = document.createElement('div');
+                collapsedSection.className = 'collapsed-section';
+
+                const header = document.createElement('div');
+                header.className = 'collapsed-header';
+                header.innerHTML = `
+                    <span>${isCollapsedSectionOpen ? '▼' : '►'}</span>
+                    <span>已折叠标签 (${collapsedTags.length})</span>
+                `;
+                header.addEventListener('click', () => {
+                    isCollapsedSectionOpen = !isCollapsedSectionOpen;
+                    renderUI();
+                });
+                collapsedSection.appendChild(header);
+
+                if (isCollapsedSectionOpen) {
+                    collapsedTags.forEach(tag => {
+                        collapsedSection.appendChild(createTagCard(tag, recentDates, monthLabels));
+                    });
+                }
+                heatmapList.appendChild(collapsedSection);
+            }
+        }
+
+        // 创建标签卡片
+        function createTagCard(tag, recentDates, monthLabels) {
+            const card = document.createElement('div');
+            card.className = 'heatmap-card';
+
+            const currentYear = new Date().getFullYear();
+
+            const header = document.createElement('div');
+            header.className = 'card-header';
+            header.innerHTML = `
+                <div class="card-title-group">
+                    <span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${tag.color}"></span>
+                    <span class="tag-name-text" id="tagName_${tag.id}">${tag.name}</span>
+                    <button class="icon-btn" id="editBtn_${tag.id}" title="修改名称">✏️</button>
+                    <span class="year-link" onclick="openYearModal('${tag.id}', ${currentYear})">${currentYear}年</span>
+                </div>
+                <div class="card-actions">
+                    <label style="cursor:pointer; display:flex; align-items:center;" title="修改主题色">
+                        <input type="color" value="${tag.color}" class="color-picker-inline" style="padding:0; width:22px; height:22px; border:none; background:none; cursor:pointer;">
+                    </label>
+                    <button class="icon-btn" onclick="toggleCollapse('${tag.id}')" title="${tag.collapsed ? '取消折叠' : '折叠'}">
+                        ${tag.collapsed ? '📂' : '📁'}
+                    </button>
+                    <button class="icon-btn danger" onclick="deleteTag('${tag.id}')" title="删除">🗑️</button>
+                </div>
+            `;
+
+            const container = document.createElement('div');
+            container.className = 'heatmap-container';
+
+            const monthsHeader = document.createElement('div');
+            monthsHeader.className = 'months-header';
+            monthLabels.forEach(m => {
+                const label = document.createElement('div');
+                label.className = 'month-label-pos';
+                label.style.left = `${m.percent}%`;
+                label.textContent = m.name;
+                monthsHeader.appendChild(label);
+            });
+            container.appendChild(monthsHeader);
+
+            const grid = document.createElement('div');
+            grid.className = 'heatmap-grid';
+
+            recentDates.forEach(({ dateStr, isFuture }) => {
+                const cell = document.createElement('div');
+                cell.className = 'day-cell';
+                
+                if (isFuture) {
+                    cell.classList.add('future-cell');
+                    cell.title = `${dateStr} (未到日期)`;
+                } else {
+                    if (selectedCell && selectedCell.dateStr === dateStr && selectedCell.tagId === tag.id) {
+                        cell.classList.add('selected');
+                    }
+
+                    const hours = state.records[dateStr]?.[tag.id]?.duration || 0;
+                    const color = getHeatColor(tag.color, hours);
+                    if (color) {
+                        cell.style.backgroundColor = color;
+                        cell.style.borderColor = 'transparent';
+                    }
+
+                    cell.title = `${dateStr} (${tag.name})\n时长: ${hours} 小时`;
+
+                    cell.addEventListener('click', () => {
+                        document.querySelectorAll('.day-cell.selected').forEach(c => c.classList.remove('selected'));
+                        cell.classList.add('selected');
+                        selectCell(dateStr, tag);
+                    });
+                }
+
+                grid.appendChild(cell);
+            });
+
+            container.appendChild(grid);
+            card.appendChild(header);
+            card.appendChild(container);
+
+            // 快捷内联编辑标签名
+            setTimeout(() => {
+                const editBtn = card.querySelector(`#editBtn_${tag.id}`);
+                const nameText = card.querySelector(`#tagName_${tag.id}`);
+
+                editBtn.addEventListener('click', () => {
+                    const isEditing = nameText.getAttribute('contenteditable') === 'true';
+                    if (!isEditing) {
+                        nameText.setAttribute('contenteditable', 'true');
+                        nameText.focus();
+                        editBtn.textContent = '✔';
+                        editBtn.title = '确认保存';
+                    } else {
+                        nameText.setAttribute('contenteditable', 'false');
+                        const newName = nameText.textContent.trim();
+                        if (newName) {
+                            tag.name = newName;
+                            saveState();
+                        } else {
+                            nameText.textContent = tag.name;
+                        }
+                        editBtn.textContent = '✏️';
+                        editBtn.title = '修改名称';
+                        renderUI();
+                    }
+                });
+            }, 0);
+
+            const colorPicker = header.querySelector('.color-picker-inline');
+            colorPicker.addEventListener('change', (e) => {
+                tag.color = e.target.value;
+                saveState();
+                renderUI();
+            });
+
+            return card;
+        }
+
+        function selectCell(dateStr, tag) {
+            selectedCell = { dateStr, tagId: tag.id };
+            const hours = state.records[dateStr]?.[tag.id]?.duration || 0;
+            const note = state.records[dateStr]?.[tag.id]?.note || '';
+
+            document.getElementById('selectedInfo').innerHTML = `
+                <div><strong>事项：</strong>${tag.name}</div>
+                <div><strong>日期：</strong>${dateStr}</div>
+                <div><strong>累计时长：</strong><span style="color:var(--accent-color); font-weight:bold;">${hours}</span> 小时</div>
+            `;
+
+            document.getElementById('noteEditor').innerHTML = note;
+        }
+
+        document.getElementById('saveNoteBtn').addEventListener('click', () => {
+            if (!selectedCell) {
+                alert('请先选择具体格子！');
+                return;
+            }
+            const { dateStr, tagId } = selectedCell;
+            const noteText = document.getElementById('noteEditor').innerHTML;
+
+            if (!state.records[dateStr]) state.records[dateStr] = {};
+            if (!state.records[dateStr][tagId]) state.records[dateStr][tagId] = { duration: 0, note: '' };
+
+            state.records[dateStr][tagId].note = noteText;
+            saveState();
+            alert('备注保存成功！');
+        });
+
+        // --- 全年弹窗逻辑 ---
+        function openYearModal(tagId, year) {
+            currentModalTagId = tagId;
+            currentModalYear = year;
+
+            const tag = state.tags.find(t => t.id === tagId);
+            if (!tag) return;
+
+            document.getElementById('modalYearTitle').textContent = year + '年';
+            document.getElementById('modalTagTitle').textContent = `- ${tag.name}`;
+            renderYearCalendar(tag, year);
+
+            document.getElementById('yearModalOverlay').classList.add('active');
+        }
+
+        function renderYearCalendar(tag, year) {
+            const gridContainer = document.getElementById('yearCalendarGrid');
+            gridContainer.innerHTML = '';
+
+            const todayStr = formatDate(new Date());
+
+            for (let m = 0; m < 12; m++) {
+                const monthCard = document.createElement('div');
+                monthCard.className = 'month-card';
+
+                const title = document.createElement('div');
+                title.className = 'month-card-title';
+                title.textContent = `${m + 1}月`;
+                monthCard.appendChild(title);
+
+                const daysGrid = document.createElement('div');
+                daysGrid.className = 'month-days-grid';
+
+                const firstDay = new Date(year, m, 1);
+                const lastDay = new Date(year, m + 1, 0);
+                const startOffset = firstDay.getDay();
+
+                // 前置空白格子：使用专门的占位框样式
+                for (let i = 0; i < startOffset; i++) {
+                    const emptyCell = document.createElement('div');
+                    emptyCell.className = 'empty-placeholder';
+                    daysGrid.appendChild(emptyCell);
+                }
+
+                for (let d = 1; d <= lastDay.getDate(); d++) {
+                    const dayCell = document.createElement('div');
+                    dayCell.className = 'month-day-cell';
+                    
+                    const dateObj = new Date(year, m, d);
+                    const dateStr = formatDate(dateObj);
+                    const hours = state.records[dateStr]?.[tag.id]?.duration || 0;
+
+                    const color = getHeatColor(tag.color, hours);
+                    if (color) {
+                        dayCell.style.backgroundColor = color;
+                        dayCell.style.borderColor = 'transparent';
+                    }
+
+                    dayCell.title = `${dateStr} : ${hours} 小时`;
+                    dayCell.textContent = d;
+
+                    if (dateStr === todayStr) {
+                        dayCell.style.border = '1px solid #fff';
+                    }
+
+                    dayCell.addEventListener('click', () => {
+                        selectCell(dateStr, tag);
+                        document.getElementById('yearModalOverlay').classList.remove('active');
+                    });
+
+                    daysGrid.appendChild(dayCell);
+                }
+
+                monthCard.appendChild(daysGrid);
+                gridContainer.appendChild(monthCard);
+            }
+        }
+
+        document.getElementById('prevYearBtn').addEventListener('click', () => {
+            currentModalYear--;
+            document.getElementById('modalYearTitle').textContent = currentModalYear + '年';
+            const tag = state.tags.find(t => t.id === currentModalTagId);
+            if (tag) renderYearCalendar(tag, currentModalYear);
+        });
+
+        document.getElementById('nextYearBtn').addEventListener('click', () => {
+            currentModalYear++;
+            document.getElementById('modalYearTitle').textContent = currentModalYear + '年';
+            const tag = state.tags.find(t => t.id === currentModalTagId);
+            if (tag) renderYearCalendar(tag, currentModalYear);
+        });
+
+        document.getElementById('closeYearModalBtn').addEventListener('click', () => {
+            document.getElementById('yearModalOverlay').classList.remove('active');
+        });
+
+        function toggleCollapse(tagId) {
+            const tag = state.tags.find(t => t.id === tagId);
+            if (tag) {
+                tag.collapsed = !tag.collapsed;
+                saveState();
+                renderUI();
+            }
+        }
+
+        function deleteTag(tagId) {
+            if (confirm('确定要删除该标签吗？')) {
+                state.tags = state.tags.filter(t => t.id !== tagId);
+                saveState();
+                renderUI();
+            }
+        }
+
+        document.getElementById('addTagBtn').addEventListener('click', () => {
+            const name = document.getElementById('newTagName').value.trim();
+            const color = document.getElementById('newTagColor').value;
+            if (!name) return;
+
+            state.tags.push({ id: Date.now().toString(), name, color, collapsed: false });
+            document.getElementById('newTagName').value = '';
+            saveState();
+            renderUI();
+        });
+
+        const toggleBtn = document.getElementById('toggleTimerBtn');
+        toggleBtn.addEventListener('click', () => {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+                toggleBtn.textContent = '开始计时';
+
+                const hours = parseFloat((timerSeconds / 3600).toFixed(2));
+                if (hours > 0) {
+                    addTimeRecord(activeTagId, hours);
+                }
+                timerSeconds = 0;
+                document.getElementById('timerDisplay').textContent = '00:00:00';
+            } else {
+                activeTagId = document.getElementById('tagSelect').value;
+                if (!activeTagId) {
+                    alert('请先选择标签！');
+                    return;
+                }
+
+                toggleBtn.textContent = '停止并保存';
+                timerInterval = setInterval(() => {
+                    timerSeconds++;
+                    const h = String(Math.floor(timerSeconds / 3600)).padStart(2, '0');
+                    const m = String(Math.floor((timerSeconds % 3600) / 60)).padStart(2, '0');
+                    const s = String(timerSeconds % 60).padStart(2, '0');
+                    document.getElementById('timerDisplay').textContent = `${h}:${m}:${s}`;
+                }, 1000);
+            }
+        });
+
+        document.getElementById('addManualBtn').addEventListener('click', () => {
+            const tagId = document.getElementById('tagSelect').value;
+            const hours = parseFloat(document.getElementById('manualHours').value);
+            if (tagId && hours > 0) {
+                addTimeRecord(tagId, hours);
+                document.getElementById('manualHours').value = '';
+            }
+        });
+
+        function addTimeRecord(tagId, hours) {
+            const today = formatDate(new Date());
+            if (!state.records[today]) state.records[today] = {};
+            if (!state.records[today][tagId]) state.records[today][tagId] = { duration: 0, note: '' };
+
+            state.records[today][tagId].duration = parseFloat((state.records[today][tagId].duration + hours).toFixed(2));
+            saveState();
+            renderUI();
+            
+            const tag = state.tags.find(t => t.id === tagId);
+            if (tag) selectCell(today, tag);
+        }
+
+        renderUI();
+    </script>
+</body>
+</html>
