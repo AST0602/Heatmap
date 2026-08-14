@@ -6,7 +6,7 @@
     <title>时间热力图 Tracker</title>
     
     <!-- 自动读取 GitHub 仓库根目录下的 favicon 文件 -->
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="icon" type="image/png" href="favicon.png">
 
     <script>
@@ -57,7 +57,7 @@
             border: 1px solid var(--border-color);
             display: flex;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 20px;
             align-items: center;
             flex-shrink: 0;
         }
@@ -84,6 +84,22 @@
             outline: none;
         }
 
+        /* 标签选择器突出显示 */
+        select.featured-select {
+            background-color: #1a2436;
+            border: 1.5px solid var(--accent-color);
+            color: #60a5fa;
+            font-weight: 600;
+            padding: 8px 14px;
+            cursor: pointer;
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.2);
+        }
+
+        select.featured-select option {
+            background-color: #1e1e1e;
+            color: #fff;
+        }
+
         input:focus, select:focus {
             border-color: var(--accent-color);
         }
@@ -108,6 +124,14 @@
         button.btn-secondary:hover {
             background: #444;
             color: #fff;
+        }
+
+        .time-input-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: #aaa;
         }
 
         .heatmap-list {
@@ -501,27 +525,25 @@
 <body>
 
     <div class="main-content">
+        <!-- 优化后的顶栏控制面板 -->
         <div class="panel">
             <div class="panel-section">
-                <select id="tagSelect"></select>
-                <div class="timer-display" id="timerDisplay" style="font-size: 20px; font-family: monospace; font-weight: bold; min-width: 80px; text-align: center;">00:00:00</div>
-                <button id="toggleTimerBtn">开始计时</button>
+                <select id="tagSelect" class="featured-select"></select>
+                
+                <div class="time-input-group">
+                    <input type="number" id="manualHours" placeholder="0" style="width: 55px;" min="0" max="24" step="1"> 小时
+                    <input type="number" id="manualMinutes" placeholder="0" style="width: 55px;" min="0" max="59" step="5"> 分钟
+                </div>
+                
+                <button id="addManualBtn">添加记录</button>
             </div>
             
             <div class="panel-divider"></div>
 
             <div class="panel-section">
-                <span>手动补充:</span>
-                <input type="number" id="manualHours" placeholder="小时" style="width: 70px;" min="0" step="0.5">
-                <button id="addManualBtn" class="btn-secondary">添加</button>
-            </div>
-
-            <div class="panel-divider"></div>
-
-            <div class="panel-section">
                 <input type="text" id="newTagName" placeholder="新标签名称">
                 <input type="color" id="newTagColor" value="#3b82f6" style="padding: 2px; width: 36px; height: 34px; cursor: pointer; flex-shrink: 0;">
-                <button id="addTagBtn">新建标签</button>
+                <button id="addTagBtn" class="btn-secondary">新建标签</button>
             </div>
         </div>
 
@@ -547,6 +569,7 @@
                     <span id="modalYearTitle">2026</span>
                     <button class="btn-secondary" id="nextYearBtn">›</button>
                     <span id="modalTagTitle" style="font-size: 15px; color: #aaa; margin-left: 5px;"></span>
+                    <span id="modalTotalHours" style="font-size: 14px; color: var(--accent-color); font-weight: normal; margin-left: 8px;"></span>
                 </div>
                 <button class="btn-secondary" id="closeYearModalBtn">✕ 关闭</button>
             </div>
@@ -600,9 +623,6 @@
         }
 
         let selectedCell = null;
-        let timerInterval = null;
-        let timerSeconds = 0;
-        let activeTagId = null;
         let isCollapsedSectionOpen = false;
 
         let currentModalTagId = null;
@@ -642,9 +662,14 @@
             return dates;
         }
 
+        // --- 优化后的热力颜色计算（以 0.5 小时为步长，最高 10 小时） ---
         function getHeatColor(baseHex, hours) {
-            if (!hours || hours === 0) return null;
-            const alpha = Math.min(hours / 8, 1);
+            if (!hours || hours <= 0) return null;
+            
+            // <= 0.5h 最浅 (0.3)，按每 0.5h 逐步递增，>=10h 为 1.0 完全不透明
+            const step = Math.min(Math.ceil(hours / 0.5), 20); 
+            const alpha = 0.3 + (step - 1) * (0.7 / 19);
+
             let c = baseHex.replace('#', '');
             if (c.length === 3) c = c.split('').map(x => x + x).join('');
             const num = parseInt(c, 16);
@@ -652,7 +677,7 @@
             const g = (num >> 8) & 255;
             const b = num & 255;
 
-            return `rgba(${r}, ${g}, ${b}, ${Math.max(alpha, 0.35)})`;
+            return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})`;
         }
 
         function renderUI() {
@@ -890,6 +915,7 @@
             gridContainer.innerHTML = '';
 
             const todayStr = formatDate(new Date());
+            let yearTotalHours = 0; // 年度累计时间
 
             for (let m = 0; m < 12; m++) {
                 const monthCard = document.createElement('div');
@@ -921,6 +947,8 @@
                     const dateStr = formatDate(dateObj);
                     const hours = state.records[dateStr]?.[tag.id]?.duration || 0;
 
+                    yearTotalHours += hours; // 累加全年的时间
+
                     const color = getHeatColor(tag.color, hours);
                     if (color) {
                         dayCell.style.backgroundColor = color;
@@ -945,6 +973,9 @@
                 monthCard.appendChild(daysGrid);
                 gridContainer.appendChild(monthCard);
             }
+
+            // 在弹窗顶部更新全年总时长统计
+            document.getElementById('modalTotalHours').textContent = `(${year}年总计: ${parseFloat(yearTotalHours.toFixed(2))} 小时)`;
         }
 
         document.getElementById('prevYearBtn').addEventListener('click', () => {
@@ -993,43 +1024,20 @@
             renderUI();
         });
 
-        const toggleBtn = document.getElementById('toggleTimerBtn');
-        toggleBtn.addEventListener('click', () => {
-            if (timerInterval) {
-                clearInterval(timerInterval);
-                timerInterval = null;
-                toggleBtn.textContent = '开始计时';
-
-                const hours = parseFloat((timerSeconds / 3600).toFixed(2));
-                if (hours > 0) {
-                    addTimeRecord(activeTagId, hours);
-                }
-                timerSeconds = 0;
-                document.getElementById('timerDisplay').textContent = '00:00:00';
-            } else {
-                activeTagId = document.getElementById('tagSelect').value;
-                if (!activeTagId) {
-                    alert('请先选择标签！');
-                    return;
-                }
-
-                toggleBtn.textContent = '停止并保存';
-                timerInterval = setInterval(() => {
-                    timerSeconds++;
-                    const h = String(Math.floor(timerSeconds / 3600)).padStart(2, '0');
-                    const m = String(Math.floor((timerSeconds % 3600) / 60)).padStart(2, '0');
-                    const s = String(timerSeconds % 60).padStart(2, '0');
-                    document.getElementById('timerDisplay').textContent = `${h}:${m}:${s}`;
-                }, 1000);
-            }
-        });
-
+        // --- 手动添加记录（处理小时 + 分钟） ---
         document.getElementById('addManualBtn').addEventListener('click', () => {
             const tagId = document.getElementById('tagSelect').value;
-            const hours = parseFloat(document.getElementById('manualHours').value);
-            if (tagId && hours > 0) {
-                addTimeRecord(tagId, hours);
+            const h = parseFloat(document.getElementById('manualHours').value) || 0;
+            const m = parseFloat(document.getElementById('manualMinutes').value) || 0;
+
+            const totalHours = h + (m / 60);
+
+            if (tagId && totalHours > 0) {
+                addTimeRecord(tagId, parseFloat(totalHours.toFixed(2)));
                 document.getElementById('manualHours').value = '';
+                document.getElementById('manualMinutes').value = '';
+            } else {
+                alert('请选择标签并输入有效的时间数值！');
             }
         });
 
