@@ -485,7 +485,6 @@
         ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: #555; }
 
-        /* --- 移动端响应式样式 --- */
         @media (max-width: 768px) {
             body {
                 flex-direction: column;
@@ -525,7 +524,6 @@
 <body>
 
     <div class="main-content">
-        <!-- 优化后的顶栏控制面板 -->
         <div class="panel">
             <div class="panel-section">
                 <select id="tagSelect" class="featured-select"></select>
@@ -578,7 +576,6 @@
     </div>
 
     <script>
-        // 本地初始缓存数据结构
         let state = JSON.parse(localStorage.getItem('heatmap_app_state_v3')) || {
             tags: [
                 { id: '1', name: '编程', color: '#3b82f6', collapsed: false },
@@ -587,12 +584,80 @@
             records: {}
         };
 
-        // --- 全局同步控制：写入本地 + 异步同步至 Worker KV ---
+        // --- 核心修复：数据深度合并策略（防止多设备覆盖） ---
+        function mergeStates(local, cloud) {
+            if (!cloud) return local;
+            const merged = { tags: [], records: {} };
+
+            // 1. 合并标签（按 ID 保留最新的属性）
+            const tagMap = new Map();
+            (local.tags || []).forEach(t => tagMap.set(t.id, { ...t }));
+            (cloud.tags || []).forEach(ct => {
+                if (!tagMap.has(ct.id)) {
+                    tagMap.set(ct.id, ct);
+                } else {
+                    const lt = tagMap.get(ct.id);
+                    tagMap.set(ct.id, {
+                        id: ct.id,
+                        name: ct.name || lt.name,
+                        color: ct.color || lt.color,
+                        collapsed: ct.collapsed !== undefined ? ct.collapsed : lt.collapsed
+                    });
+                }
+            });
+            merged.tags = Array.from(tagMap.values());
+
+            // 2. 合并每日打卡记录（时长取两端最大值或相加，备注保留较详细的）
+            const allDates = new Set([
+                ...Object.keys(local.records || {}),
+                ...Object.keys(cloud.records || {})
+            ]);
+
+            allDates.forEach(date => {
+                merged.records[date] = {};
+                const localDateRecords = local.records?.[date] || {};
+                const cloudDateRecords = cloud.records?.[date] || {};
+
+                const allTagIds = new Set([
+                    ...Object.keys(localDateRecords),
+                    ...Object.keys(cloudDateRecords)
+                ]);
+
+                allTagIds.forEach(tagId => {
+                    const lRec = localDateRecords[tagId] || { duration: 0, note: '' };
+                    const cRec = cloudDateRecords[tagId] || { duration: 0, note: '' };
+
+                    // 时长取设备间最大的一个，防止覆盖丢失
+                    const maxDuration = Math.max(lRec.duration || 0, cRec.duration || 0);
+                    // 备注优先保留长度更长的非空内容
+                    const bestNote = (lRec.note || '').length >= (cRec.note || '').length ? lRec.note : cRec.note;
+
+                    merged.records[date][tagId] = {
+                        duration: parseFloat(maxDuration.toFixed(2)),
+                        note: bestNote || ''
+                    };
+                });
+            });
+
+            return merged;
+        }
+
+        // --- 全局保存：先拉取云端合并，再提交 ---
         async function saveState() {
+            // 写入本地
             localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
             
             if (window.WORKER_API_URL && !window.WORKER_API_URL.includes('your-worker-name')) {
                 try {
+                    // 先拿云端最新数据合并一次，避免覆盖其他设备刚才写入的记录
+                    const getRes = await fetch(window.WORKER_API_URL);
+                    if (getRes.ok) {
+                        const cloudData = await getRes.json();
+                        state = mergeStates(state, cloudData);
+                        localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
+                    }
+
+                    // 再写回合并后的最新完整数据
                     await fetch(window.WORKER_API_URL, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -604,23 +669,38 @@
             }
         }
 
-        // --- 页面初始化时拉取云端数据 ---
+        // --- 页面初始化与重新获取焦点时拉取数据 ---
         async function loadStateFromCloud() {
             if (!window.WORKER_API_URL || window.WORKER_API_URL.includes('your-worker-name')) return;
             try {
                 const res = await fetch(window.WORKER_API_URL);
                 if (res.ok) {
                     const cloudData = await res.json();
-                    if (cloudData && cloudData.tags) {
-                        state = cloudData;
+                    if (cloudData) {
+                        state = mergeStates(state, cloudData);
                         localStorage.setItem('heatmap_app_state_v3', JSON.stringify(state));
                         renderUI();
+                        // 如果当前选中了某天，顺便刷新侧边栏
+                        if (selectedCell) {
+                            const tag = state.tags.find(t => t.id === selectedCell.tagId);
+                            if (tag) selectCell(selectedCell.dateStr, tag);
+                        }
                     }
                 }
             } catch (e) {
                 console.warn('云端读取失败，采用本地缓存数据', e);
             }
         }
+
+        // 监听设备切换/浏览器标签页切回事件，切回时静默拉取云端最新数据
+        window.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                loadStateFromCloud();
+            }
+        });
+        window.addEventListener('focus', () => {
+            loadStateFromCloud();
+        });
 
         let selectedCell = null;
         let isCollapsedSectionOpen = false;
@@ -662,11 +742,9 @@
             return dates;
         }
 
-        // --- 优化后的热力颜色计算（以 0.5 小时为步长，最高 10 小时） ---
         function getHeatColor(baseHex, hours) {
             if (!hours || hours <= 0) return null;
             
-            // <= 0.5h 最浅 (0.3)，按每 0.5h 逐步递增，>=10h 为 1.0 完全不透明
             const step = Math.min(Math.ceil(hours / 0.5), 20); 
             const alpha = 0.3 + (step - 1) * (0.7 / 19);
 
@@ -682,7 +760,9 @@
 
         function renderUI() {
             const tagSelect = document.getElementById('tagSelect');
+            const currentSelectedValue = tagSelect.value;
             tagSelect.innerHTML = '';
+            
             const activeTags = state.tags.filter(t => !t.collapsed);
             activeTags.forEach(tag => {
                 const opt = document.createElement('option');
@@ -690,6 +770,9 @@
                 opt.textContent = tag.name;
                 tagSelect.appendChild(opt);
             });
+            if (currentSelectedValue && activeTags.some(t => t.id === currentSelectedValue)) {
+                tagSelect.value = currentSelectedValue;
+            }
 
             const heatmapList = document.getElementById('heatmapList');
             heatmapList.innerHTML = '';
@@ -880,7 +963,7 @@
             document.getElementById('noteEditor').innerHTML = note;
         }
 
-        document.getElementById('saveNoteBtn').addEventListener('click', () => {
+        document.getElementById('saveNoteBtn').addEventListener('click', async () => {
             if (!selectedCell) {
                 alert('请先选择具体格子！');
                 return;
@@ -892,7 +975,7 @@
             if (!state.records[dateStr][tagId]) state.records[dateStr][tagId] = { duration: 0, note: '' };
 
             state.records[dateStr][tagId].note = noteText;
-            saveState();
+            await saveState();
             alert('备注保存成功！');
         });
 
@@ -915,7 +998,7 @@
             gridContainer.innerHTML = '';
 
             const todayStr = formatDate(new Date());
-            let yearTotalHours = 0; // 年度累计时间
+            let yearTotalHours = 0;
 
             for (let m = 0; m < 12; m++) {
                 const monthCard = document.createElement('div');
@@ -947,7 +1030,7 @@
                     const dateStr = formatDate(dateObj);
                     const hours = state.records[dateStr]?.[tag.id]?.duration || 0;
 
-                    yearTotalHours += hours; // 累加全年的时间
+                    yearTotalHours += hours;
 
                     const color = getHeatColor(tag.color, hours);
                     if (color) {
@@ -974,7 +1057,6 @@
                 gridContainer.appendChild(monthCard);
             }
 
-            // 在弹窗顶部更新全年总时长统计
             document.getElementById('modalTotalHours').textContent = `(${year}年总计: ${parseFloat(yearTotalHours.toFixed(2))} 小时)`;
         }
 
@@ -1005,27 +1087,26 @@
             }
         }
 
-        function deleteTag(tagId) {
+        async function deleteTag(tagId) {
             if (confirm('确定要删除该标签吗？')) {
                 state.tags = state.tags.filter(t => t.id !== tagId);
-                saveState();
+                await saveState();
                 renderUI();
             }
         }
 
-        document.getElementById('addTagBtn').addEventListener('click', () => {
+        document.getElementById('addTagBtn').addEventListener('click', async () => {
             const name = document.getElementById('newTagName').value.trim();
             const color = document.getElementById('newTagColor').value;
             if (!name) return;
 
             state.tags.push({ id: Date.now().toString(), name, color, collapsed: false });
             document.getElementById('newTagName').value = '';
-            saveState();
+            await saveState();
             renderUI();
         });
 
-        // --- 手动添加记录（处理小时 + 分钟） ---
-        document.getElementById('addManualBtn').addEventListener('click', () => {
+        document.getElementById('addManualBtn').addEventListener('click', async () => {
             const tagId = document.getElementById('tagSelect').value;
             const h = parseFloat(document.getElementById('manualHours').value) || 0;
             const m = parseFloat(document.getElementById('manualMinutes').value) || 0;
@@ -1033,7 +1114,7 @@
             const totalHours = h + (m / 60);
 
             if (tagId && totalHours > 0) {
-                addTimeRecord(tagId, parseFloat(totalHours.toFixed(2)));
+                await addTimeRecord(tagId, parseFloat(totalHours.toFixed(2)));
                 document.getElementById('manualHours').value = '';
                 document.getElementById('manualMinutes').value = '';
             } else {
@@ -1041,20 +1122,20 @@
             }
         });
 
-        function addTimeRecord(tagId, hours) {
+        async function addTimeRecord(tagId, hours) {
             const today = formatDate(new Date());
             if (!state.records[today]) state.records[today] = {};
             if (!state.records[today][tagId]) state.records[today][tagId] = { duration: 0, note: '' };
 
             state.records[today][tagId].duration = parseFloat((state.records[today][tagId].duration + hours).toFixed(2));
-            saveState();
+            await saveState();
             renderUI();
             
             const tag = state.tags.find(t => t.id === tagId);
             if (tag) selectCell(today, tag);
         }
 
-        // 初始化：渲染界面并异步同步云端最新记录
+        // 初始化
         renderUI();
         loadStateFromCloud();
     </script>
